@@ -29,16 +29,20 @@ import com.gargoylesoftware.htmlunit.WebAssert;
 import com.gargoylesoftware.htmlunit.html.HtmlForm;
 import com.gargoylesoftware.htmlunit.html.HtmlPage;
 
+import hudson.security.AbstractPasswordBasedSecurityRealm;
 import hudson.security.AccessDeniedException2;
 import hudson.security.GlobalMatrixAuthorizationStrategy;
+import hudson.security.GroupDetails;
 import hudson.security.HudsonPrivateSecurityRealm;
 import hudson.security.Permission;
+import hudson.security.UserMayOrMayNotExistException;
 import hudson.tasks.MailAddressResolver;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Locale;
 
 import jenkins.model.IdStrategy;
 import jenkins.model.Jenkins;
@@ -46,14 +50,19 @@ import jenkins.security.ApiTokenProperty;
 
 import org.acegisecurity.AccessDeniedException;
 import org.acegisecurity.Authentication;
+import org.acegisecurity.AuthenticationException;
+import org.acegisecurity.GrantedAuthority;
 import org.acegisecurity.context.SecurityContext;
 import org.acegisecurity.context.SecurityContextHolder;
+import org.acegisecurity.userdetails.UserDetails;
+import org.acegisecurity.userdetails.UsernameNotFoundException;
 
 import static org.junit.Assert.*;
 import static org.junit.Assume.*;
+
+import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
-import org.jvnet.hudson.test.Issue;
 import org.jvnet.hudson.test.FakeChangeLogSCM;
 import org.jvnet.hudson.test.Issue;
 import org.jvnet.hudson.test.JenkinsRule;
@@ -98,11 +107,6 @@ public class UserTest {
           @Override
           public UserProperty newInstance(User user) {
               return null;
-          }
-
-          @Override
-          public String getDisplayName() {
-              return "Property";
           }
       }
     }
@@ -175,12 +179,7 @@ public class UserTest {
 
     @Test
     public void caseInsensitivity() {
-        j.jenkins.setSecurityRealm(new HudsonPrivateSecurityRealm(true, false, null){
-            @Override
-            public IdStrategy getUserIdStrategy() {
-                return new IdStrategy.CaseInsensitive();
-            }
-        });
+        j.jenkins.setSecurityRealm(new IdStrategySpecifyingSecurityRealm(new IdStrategy.CaseInsensitive()));
         User user = User.get("john smith");
         User user2 = User.get("John Smith");
         assertSame("Users should have the same id.", user.getId(), user2.getId());
@@ -190,12 +189,7 @@ public class UserTest {
     
     @Test
     public void caseSensitivity() {
-        j.jenkins.setSecurityRealm(new HudsonPrivateSecurityRealm(true, false, null){
-            @Override
-            public IdStrategy getUserIdStrategy() {
-                return new IdStrategy.CaseSensitive();
-            }
-        });
+        j.jenkins.setSecurityRealm(new IdStrategySpecifyingSecurityRealm(new IdStrategy.CaseSensitive()));
         User user = User.get("john smith");
         User user2 = User.get("John Smith");
         assertNotSame("Users should not have the same id.", user.getId(), user2.getId());
@@ -209,12 +203,7 @@ public class UserTest {
 
     @Test
     public void caseSensitivityEmail() {
-        j.jenkins.setSecurityRealm(new HudsonPrivateSecurityRealm(true, false, null){
-            @Override
-            public IdStrategy getUserIdStrategy() {
-                return new IdStrategy.CaseSensitiveEmailAddress();
-            }
-        });
+        j.jenkins.setSecurityRealm(new IdStrategySpecifyingSecurityRealm(new IdStrategy.CaseSensitiveEmailAddress()));
         User user = User.get("john.smith@acme.org");
         User user2 = User.get("John.Smith@acme.org");
         assertNotSame("Users should not have the same id.", user.getId(), user2.getId());
@@ -228,6 +217,18 @@ public class UserTest {
         assertEquals("john.smith@acme.org", User.idStrategy().filenameOf(user2.getId()));
         assertEquals(user.getId(), User.idStrategy().idFromFilename(User.idStrategy().filenameOf(user.getId())));
         assertEquals(user2.getId(), User.idStrategy().idFromFilename(User.idStrategy().filenameOf(user2.getId())));
+    }
+
+    private static class IdStrategySpecifyingSecurityRealm extends HudsonPrivateSecurityRealm {
+        private final IdStrategy idStrategy;
+        IdStrategySpecifyingSecurityRealm(IdStrategy idStrategy) {
+            super(true, false, null);
+            this.idStrategy = idStrategy;
+        }
+        @Override
+        public IdStrategy getUserIdStrategy() {
+            return idStrategy;
+        }
     }
 
     @Issue("JENKINS-24317")
@@ -248,7 +249,7 @@ public class UserTest {
         user.addProperty(prop);
         assertNotNull("User should have SomeUserProperty property.", user.getProperty(SomeUserProperty.class));
         assertEquals("UserProperty1 should be assigned to its descriptor", prop, user.getProperties().get(prop.getDescriptor()));
-        assertTrue("User should should contains SomeUserProperty.", user.getAllProperties().contains(prop));
+        assertTrue("User should should contain SomeUserProperty.", user.getAllProperties().contains(prop));
         User.reload();
         assertNotNull("User should have SomeUserProperty property.", user.getProperty(SomeUserProperty.class));
     }
@@ -302,7 +303,7 @@ public class UserTest {
         assertNotNull("User should not be null.", user);
         user.clear();
         user = User.get("John Smith", false, Collections.emptyMap());
-        assertNull("User shoudl be null", user);       
+        assertNull("User should be null", user);       
     }
 
     @Test
@@ -398,7 +399,7 @@ public class UserTest {
         SecurityContextHolder.getContext().setAuthentication(user2.impersonate());
         try{
             user.doConfigSubmit(null, null);
-            fail("User should not have permission to configure antoher user.");
+            fail("User should not have permission to configure another user.");
         }
         catch(Exception e){
             if(!(e.getClass().isAssignableFrom(AccessDeniedException2.class))){
@@ -436,7 +437,7 @@ public class UserTest {
         SecurityContextHolder.getContext().setAuthentication(user2.impersonate());
         try{
             user.doDoDelete(null, null);
-            fail("User should not have permission to delete antoher user.");
+            fail("User should not have permission to delete another user.");
         }
         catch(Exception e){
             if(!(e.getClass().isAssignableFrom(AccessDeniedException2.class))){
@@ -452,6 +453,7 @@ public class UserTest {
         }
         catch(FailingHttpStatusCodeException e){
             //ok exception should be thrown
+            Assert.assertEquals(400, e.getStatusCode());
         }
         assertTrue("User should not delete himself from memory.", User.getAll().contains(user));
         assertTrue("User should not delete his persistent data.", user.getConfigFile().exists());
@@ -539,14 +541,147 @@ public class UserTest {
         } catch (AccessDeniedException expected) { }
     }
 
+    @Issue("SECURITY-243")
+    @Test
+    public void resolveByIdThenName() throws Exception{
+        j.jenkins.setSecurityRealm(new HudsonPrivateSecurityRealm(true, false, null));
+
+        User u1 = User.get("user1");
+        u1.setFullName("User One");
+        u1.save();
+
+        User u2 = User.get("user2");
+        u2.setFullName("User Two");
+        u2.save();
+
+        assertNotSame("Users should not have the same id.", u1.getId(), u2.getId());
+
+        User u = User.get("User One");
+        assertEquals("'User One' should resolve to u1", u1.getId(), u.getId());
+
+        u = User.get("User Two");
+        assertEquals("'User Two' should resolve to u2", u2.getId(), u.getId());
+
+        u = User.get("user1");
+        assertEquals("'user1' should resolve to u1", u1.getId(), u.getId());
+
+        u = User.get("user2");
+        assertEquals("'user2' should resolve to u2", u2.getId(), u.getId());
+
+        u1.setFullName("user2");
+        u1.save();
+        u = User.get("user2");
+        assertEquals("'user2' should resolve to u2", u2.getId(), u.getId());
+        u = User.get("user1");
+        assertEquals("'user1' should resolve to u1", u1.getId(), u.getId());
+
+
+        u1.setFullName("user1");
+        u1.save();
+        u2.setFullName("user1");
+        u2.save();
+        u = User.get("user1");
+        assertEquals("'user1' should resolve to u1", u1.getId(), u.getId());
+        u = User.get("user2");
+        assertEquals("'user2' should resolve to u2", u2.getId(), u.getId());
+    }
+
+    @Issue("SECURITY-243")
+    @Test
+    public void resolveByUnloadedIdThenName() throws Exception {
+        j.jenkins.setSecurityRealm(new ExternalSecurityRealm());
+        // do *not* call this here: User.get("victim");
+        User attacker1 = User.get("attacker1");
+        attacker1.setFullName("victim1");
+        User victim1 = User.get("victim1");
+        assertEquals("victim1 is a real user ID, we must ignore the attacker1’s fullName", "victim1", victim1.getId());
+        assertEquals("a recursive call to User.get was OK", null, victim1.getProperty(MyViewsProperty.class).getPrimaryViewName());
+        assertEquals("(though the realm mistakenly added metadata to the attacker)", "victim1", attacker1.getProperty(MyViewsProperty.class).getPrimaryViewName());
+        User.get("attacker2").setFullName("nonexistent");
+        assertEquals("but if we cannot find such a user ID, allow the fullName", "attacker2", User.get("nonexistent").getId());
+        User.get("attacker3").setFullName("unknown");
+        assertEquals("or if we are not sure, allow the fullName", "attacker3", User.get("unknown").getId());
+        User.get("attacker4").setFullName("Victim2");
+        assertEquals("victim2 is a real (canonical) user ID", "victim2", User.get("Victim2").getId());
+
+    }
+    private static class ExternalSecurityRealm extends AbstractPasswordBasedSecurityRealm {
+        @Override
+        public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+            if (username.equals("nonexistent")) {
+                throw new UsernameNotFoundException(username);
+            } else if (username.equals("unknown")) {
+                throw new UserMayOrMayNotExistException(username);
+            } else {
+                String canonicalName = username.toLowerCase(Locale.ENGLISH);
+                try {
+                    User.get(canonicalName).addProperty(new MyViewsProperty(canonicalName));
+                } catch (IOException x) {
+                    throw new RuntimeException(x);
+                }
+                return new org.acegisecurity.userdetails.User(canonicalName, "", true, true, true, true, new GrantedAuthority[] {AUTHENTICATED_AUTHORITY});
+            }
+        }
+        @Override
+        protected UserDetails authenticate(String username, String password) throws AuthenticationException {
+            return loadUserByUsername(username); // irrelevant
+        }
+        @Override
+        public GroupDetails loadGroupByGroupname(String groupname) throws UsernameNotFoundException {
+            throw new UsernameNotFoundException(groupname); // irrelevant
+        }
+    }
+
+    @Test
+    public void resolveById() throws Exception {
+        User u1 = User.get("user1");
+        u1.setFullName("User One");
+        u1.save();
+
+        User u2 = User.get("user2");
+        u2.setFullName("User Two");
+        u2.save();
+
+        assertNotSame("Users should not have the same id.", u1.getId(), u2.getId());
+
+        // We can get the same user back.
+        User u = User.getById("user1", false);
+        assertSame("'user1' should return u1", u1, u);
+
+        // passing true should not create a new user if it does not exist.
+        u = User.getById("user1", true);
+        assertSame("'user1' should return u1", u1, u);
+
+        // should not lookup by name.
+        u = User.getById("User One", false);
+        assertNull("'User One' should not resolve to any user", u);
+
+        // We can get the same user back.
+        u = User.getById("user2", false);
+        assertSame("'user2' should return u2", u2, u);
+
+        // passing true should not create a new user if it does not exist.
+        u = User.getById("user2", true);
+        assertSame("'user2' should return u1", u2, u);
+
+        // should not lookup by name.
+        u = User.getById("User Two", false);
+        assertNull("'User Two' should not resolve to any user", u);
+
+        u1.setFullName("user1");
+        u1.save();
+        u2.setFullName("user1");
+        u2.save();
+        u = User.getById("user1", false);
+        assertSame("'user1' should resolve to u1", u1, u);
+        u = User.getById("user2", false);
+        assertSame("'user2' should resolve to u2", u2, u);
+    }
+
      public static class SomeUserProperty extends UserProperty {
          
         @TestExtension
         public static class DescriptorImpl extends UserPropertyDescriptor {
-            public String getDisplayName() {
-                return "UserProperty1";
-            }
-
             @Override
             public UserProperty newInstance(User user) {
                 return new SomeUserProperty();

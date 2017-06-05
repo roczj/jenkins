@@ -5,9 +5,11 @@ import hudson.FilePath;
 import hudson.model.AdministrativeMonitor;
 import hudson.remoting.Callable;
 import jenkins.model.Jenkins;
+import org.jenkinsci.Symbol;
 import org.kohsuke.stapler.HttpResponse;
 import org.kohsuke.stapler.HttpResponses;
 import org.kohsuke.stapler.QueryParameter;
+import org.kohsuke.stapler.interceptor.RequirePOST;
 
 import javax.inject.Inject;
 import java.io.IOException;
@@ -19,7 +21,7 @@ import java.io.IOException;
  * @since 1.THU
  * @author Kohsuke Kawaguchi
  */
-@Extension
+@Extension @Symbol("slaveToMasterAccessControl")
 public class AdminCallableMonitor extends AdministrativeMonitor {
     @Inject
     Jenkins jenkins;
@@ -38,7 +40,7 @@ public class AdminCallableMonitor extends AdministrativeMonitor {
 
     @Override
     public String getDisplayName() {
-        return "Slave \u2192 Master Access Control";
+        return Messages.AdminCallableMonitor_DisplayName();
     }
 
     // bind this to URL
@@ -47,8 +49,9 @@ public class AdminCallableMonitor extends AdministrativeMonitor {
     }
 
     /**
-     * Depending on whether the user said "examin" or "dismiss", send him to the right place.
+     * Depending on whether the user said "examine" or "dismiss", send him to the right place.
      */
+    @RequirePOST
     public HttpResponse doAct(@QueryParameter String dismiss) throws IOException {
         if(dismiss!=null) {
             disable(true);
